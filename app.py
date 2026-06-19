@@ -16,13 +16,6 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 warnings.filterwarnings("ignore")
 
 
-
-
-
-
-
-
-
 # =========================================================
 # SIDEBAR
 # =========================================================
