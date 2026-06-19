@@ -1,0 +1,212 @@
+# =========================================================
+# PRONÓSTICOS MENSUALES
+# =========================================================
+def asegurar_prediccion_valida(pred, serie) -> np.ndarray:
+    pred = np.asarray(pred, dtype=float)
+    if pred.size == 0:
+        return np.zeros(len(serie))
+    valor_relleno = float(np.nanmean(serie)) if len(serie) else 0.0
+    if np.isnan(valor_relleno):
+        valor_relleno = 0.0
+    pred = np.where(np.isfinite(pred), pred, valor_relleno)
+    return np.maximum(0, pred)
+
+
+def forecast_naive(serie: np.ndarray, pasos_futuros: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    if len(serie) == 0:
+        return np.array([]), np.array([])
+    pred_hist = np.empty(len(serie), dtype=float)
+    pred_hist[0] = serie[0]
+    if len(serie) > 1:
+        pred_hist[1:] = serie[:-1]
+    ultimo = serie[-1]
+    pred_future = np.repeat(ultimo, pasos_futuros)
+    return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+
+
+def forecast_promedio_movil(
+    serie: np.ndarray, pasos_futuros: int = 0, ventana: int = 3
+) -> tuple[np.ndarray, np.ndarray]:
+    if len(serie) == 0:
+        return np.array([]), np.array([])
+    pred_hist = np.empty(len(serie), dtype=float)
+    pred_hist[0] = serie[0]
+    for i in range(1, len(serie)):
+        inicio = max(0, i - ventana)
+        pred_hist[i] = np.mean(serie[inicio:i])
+
+    historial_extendido = list(serie.astype(float))
+    futuros = []
+    for _ in range(pasos_futuros):
+        ultimos = historial_extendido[-ventana:]
+        valor = float(np.mean(ultimos)) if ultimos else 0.0
+        futuros.append(valor)
+        historial_extendido.append(valor)
+
+    return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, np.array(futuros))
+
+
+def forecast_regresion(serie: np.ndarray, pasos_futuros: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    if len(serie) == 0:
+        return np.array([]), np.array([])
+    x = np.arange(len(serie)).reshape(-1, 1)
+    modelo = LinearRegression()
+    modelo.fit(x, serie)
+    pred_hist = modelo.predict(x)
+
+    if pasos_futuros > 0:
+        x_future = np.arange(len(serie), len(serie) + pasos_futuros).reshape(-1, 1)
+        pred_future = modelo.predict(x_future)
+    else:
+        pred_future = np.array([])
+
+    return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+
+
+def forecast_ses(
+    serie: np.ndarray, pasos_futuros: int = 0, alpha: float = 0.30
+) -> tuple[np.ndarray, np.ndarray]:
+    if len(serie) < 3:
+        valor = float(np.mean(serie)) if len(serie) else 0.0
+        return np.repeat(valor, len(serie)), np.repeat(valor, pasos_futuros)
+
+    try:
+        modelo = SimpleExpSmoothing(serie, initialization_method="estimated")
+        ajuste = modelo.fit(smoothing_level=alpha, optimized=False)
+        pred_hist = np.asarray(ajuste.fittedvalues)
+        pred_future = np.asarray(ajuste.forecast(pasos_futuros)) if pasos_futuros > 0 else np.array([])
+        return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+    except Exception:
+        return forecast_promedio_movil(serie, pasos_futuros)
+
+
+def forecast_arima(serie: np.ndarray, pasos_futuros: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    if len(serie) < 12:
+        return forecast_ses(serie, pasos_futuros)
+
+    try:
+        modelo = ARIMA(serie, order=(1, 1, 1))
+        ajuste = modelo.fit()
+        pred_hist = np.asarray(ajuste.fittedvalues)
+        pred_future = np.asarray(ajuste.forecast(pasos_futuros)) if pasos_futuros > 0 else np.array([])
+        return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+    except Exception:
+        return forecast_ses(serie, pasos_futuros)
+
+
+def forecast_sarima(serie: np.ndarray, pasos_futuros: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    if len(serie) < 24:
+        return forecast_arima(serie, pasos_futuros)
+
+    try:
+        modelo = SARIMAX(
+            serie,
+            order=(1, 1, 1),
+            seasonal_order=(1, 1, 1, 12),
+            enforce_stationarity=False,
+            enforce_invertibility=False,
+        )
+        ajuste = modelo.fit(disp=False)
+        pred_hist = np.asarray(ajuste.fittedvalues)
+        pred_future = np.asarray(ajuste.forecast(pasos_futuros)) if pasos_futuros > 0 else np.array([])
+        return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+    except Exception:
+        return forecast_arima(serie, pasos_futuros)
+
+
+def forecast_holt_winters(serie: np.ndarray, pasos_futuros: int = 0) -> tuple[np.ndarray, np.ndarray]:
+    if len(serie) < 24:
+        try:
+            modelo = ExponentialSmoothing(
+                serie,
+                trend="add",
+                seasonal=None,
+                initialization_method="estimated",
+            )
+            ajuste = modelo.fit(optimized=True)
+            pred_hist = np.asarray(ajuste.fittedvalues)
+            pred_future = np.asarray(ajuste.forecast(pasos_futuros)) if pasos_futuros > 0 else np.array([])
+            return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+        except Exception:
+            return forecast_ses(serie, pasos_futuros)
+
+    try:
+        modelo = ExponentialSmoothing(
+            serie,
+            trend="add",
+            seasonal="add",
+            seasonal_periods=12,
+            initialization_method="estimated",
+        )
+        ajuste = modelo.fit(optimized=True)
+        pred_hist = np.asarray(ajuste.fittedvalues)
+        pred_future = np.asarray(ajuste.forecast(pasos_futuros)) if pasos_futuros > 0 else np.array([])
+        return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+    except Exception:
+        return forecast_ses(serie, pasos_futuros)
+
+
+def forecast_croston(
+    serie: np.ndarray, pasos_futuros: int = 0, alpha: float = 0.1
+) -> tuple[np.ndarray, np.ndarray]:
+    serie = np.asarray(serie, dtype=float)
+    n = len(serie)
+    if n == 0:
+        return np.array([]), np.array([])
+    if np.all(serie == 0):
+        return np.zeros(n), np.zeros(pasos_futuros)
+
+    first_nonzero_idx = np.argmax(serie > 0)
+    z = serie[first_nonzero_idx]
+    p = first_nonzero_idx + 1 if first_nonzero_idx + 1 > 0 else 1
+    q = z / p
+
+    pred_hist = np.zeros(n, dtype=float)
+    interval = 1
+    for t in range(n):
+        pred_hist[t] = q
+        if serie[t] > 0:
+            z = alpha * serie[t] + (1 - alpha) * z
+            p = alpha * interval + (1 - alpha) * p
+            q = z / max(p, 1e-9)
+            interval = 1
+        else:
+            interval += 1
+
+    pred_future = np.repeat(q, pasos_futuros)
+    return asegurar_prediccion_valida(pred_hist, serie), np.maximum(0, pred_future)
+
+
+def aplicar_metodo_pronostico(
+    serie: np.ndarray, metodo: str, pasos_futuros: int = 0
+) -> tuple[np.ndarray, np.ndarray]:
+    if metodo == "Naive":
+        return forecast_naive(serie, pasos_futuros)
+    if metodo == "Promedio móvil":
+        return forecast_promedio_movil(serie, pasos_futuros)
+    if metodo == "Regresión lineal":
+        return forecast_regresion(serie, pasos_futuros)
+    if metodo == "ARIMA":
+        return forecast_arima(serie, pasos_futuros)
+    if metodo == "SARIMA":
+        return forecast_sarima(serie, pasos_futuros)
+    if metodo == "Holt-Winters":
+        return forecast_holt_winters(serie, pasos_futuros)
+    if metodo == "Croston":
+        return forecast_croston(serie, pasos_futuros)
+    return forecast_ses(serie, pasos_futuros)
+
+
+def calcular_errores(y_real, y_pred) -> dict:
+    y_real = np.asarray(y_real, dtype=float)
+    y_pred = np.asarray(y_pred, dtype=float)
+    suma_real = y_real.sum()
+
+    mae = np.mean(np.abs(y_real - y_pred)) if len(y_real) else 0.0
+
+    if suma_real == 0:
+        return {"wMAPE": 0.0, "Bias": 0.0, "MAE": mae}
+
+    wmape = np.sum(np.abs(y_real - y_pred)) / suma_real
+    bias = np.sum(y_pred - y_real) / suma_real
+    return {"wMAPE": wmape, "Bias": bias, "MAE": mae}
